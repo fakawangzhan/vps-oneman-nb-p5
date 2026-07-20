@@ -13,9 +13,9 @@ class CLICD:
         self.base = base_url.rstrip("/")
         self.headers = {"X-API-Key": token, "Content-Type": "application/json"}
 
-    async def request(self, method: str, path: str, data: dict[str, Any] | None = None):
+    async def request(self, method: str, path: str, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None):
         async with httpx.AsyncClient(timeout=httpx.Timeout(20, connect=5)) as client:
-            response = await client.request(method, self.base + "/api/v1" + path, headers=self.headers, json=data)
+            response = await client.request(method, self.base + "/api/v1" + path, headers=self.headers, json=data, params=params)
         try:
             response.raise_for_status()
             result = response.json() if response.content else {}
@@ -28,8 +28,47 @@ class CLICD:
     async def test(self):
         return await self.request("GET", "/dashboard")
 
+    async def dashboard(self):
+        return await self.request("GET", "/dashboard")
+
+    async def containers(self):
+        return await self.request("GET", "/containers")
+
+    async def templates(self, virtualization: str = ""):
+        return await self.request("GET", "/images/enabled", params={"type": virtualization} if virtualization else None)
+
+    async def host_info(self):
+        return await self.request("GET", "/host-info")
+
+    async def routing(self):
+        return await self.request("GET", "/routing")
+
+    async def tasks(self):
+        return await self.request("GET", "/tasks")
+
+    async def snapshots_overview(self):
+        return await self.request("GET", "/snapshots")
+
+    async def security_summary(self):
+        return await self.request("GET", "/security/summary")
+
+    async def audit_logs(self):
+        return await self.request("GET", "/audit-logs")
+
     async def create(self, payload: dict[str, Any]):
         return await self.request("POST", "/containers", payload)
+
+    async def delete(self, instance_id: str):
+        return await self.request("DELETE", f"/containers/{instance_id}/delete")
+
+    async def update_resource_limit(self, instance_id: str, payload: dict[str, Any]):
+        return await self.request("PUT", f"/containers/{instance_id}/resource-limit", payload)
+
+    async def update_traffic_limit(self, instance_id: str, payload: dict[str, Any]):
+        return await self.request("PUT", f"/containers/{instance_id}/traffic-limit", payload)
+
+    async def update_expiry(self, instance_id: str, expires_at: str):
+        return await self.request("PUT", f"/containers/{instance_id}/expiry", {"expires_at": expires_at})
 
     async def get(self, instance_id: str):
         return await self.request("GET", f"/containers/{instance_id}")

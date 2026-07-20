@@ -1,5 +1,7 @@
 # VPS-ONE 部署说明
 
+> 当前版本已移除 EdgeKey 与内置 HashPay 容器，支付直接连接外部 HashPay。后台“站点公开地址”保存后覆盖环境变量 `BASE_URL`，用于生成支付回调和返回地址。
+
 ## 系统架构
 
 VPS-ONE 使用 Python 3.12、FastAPI、SQLAlchemy async、aiosqlite、Jinja2。SQLite 启用 WAL、NORMAL 同步、15 秒 busy timeout，并通过短事务与应用写锁优化单机并发。系统不支持多容器同时写同一 SQLite 文件。
@@ -26,22 +28,28 @@ http://服务器IP:9080/install
 - `SECRET_KEY`：会话及 CSRF 签名密钥，禁止修改，否则现有会话失效。
 - `MASTER_KEY`：API 凭据加密密钥，禁止丢失或修改。
 - `DATABASE_URL`：默认 `sqlite+aiosqlite:////app/data/vps-one.sqlite`。
-- `BASE_URL`：站点公开 HTTPS 地址，用于支付返回地址。
+- `BASE_URL`：仅首次安装回退地址；后台保存“站点公开地址”后由数据库配置全局覆盖。
 - `VPS_ONE_PORT`：主机监听端口，默认 9080。
 
 ## CLICD 配置
 
-后台填入 CLICD Base URL 与 Bearer Token。系统统一访问 `/api/v1`，套餐映射 CPU、内存、磁盘、流量、带宽、节点、镜像及到期时间；支持创建、状态读取、开关机、重启、重装、重置密码、流量限制与续期。不同 CLICD 发行版字段可能不同，生产上线前请用测试节点验证。
+在 CLICD“API 集成”创建 API Key，并授予 dashboard、container、image、routing、task、security 与 audit 所需权限。后台填写 CLICD 根地址和 API Key，系统统一访问 `/api/v1`；“产品控制”读取容器、主机、路由、任务与安全数据，并支持电源、密码、资源、流量和受确认保护的删除操作。
 
-## HashPay 配置
+创建套餐时，表单直接读取 CLICD `/images/enabled` 返回的已启用且已下载镜像，保存时再次远程校验必要字段，不会提前创建真实容器。用户完成 HashPay 支付并通过回调验证后，系统才调用 CLICD 创建对应 VPS。
 
-后台填入 HashPay 地址、Merchant ID、商户 RSA 私钥及 HashPay 公钥。支付回调：
+## HashPay 支付 API 配置与回调
+
+1. 在外部 HashPay 创建商户，取得 Merchant ID、商户 RSA 私钥与 HashPay RSA 公钥。
+2. 在 VPS-ONE“系统配置”填写 HashPay 根地址和以上凭据。
+3. 在后台配置站点公开 HTTPS 地址；系统自动生成回调：
 
 ```text
 https://你的域名/hashpay/callback
 ```
 
-请求采用 RSA-SHA256 签名；加密回调采用 RSA-OAEP-SHA256 解密 AES Key，再以 AES-GCM 解密载荷。系统复核订单号、金额、状态并以事件唯一键保证回调幂等。
+创建订单调用 HashPay `POST /api/merchant/new`，请求头使用 `X-Merchant-ID` 与 `X-Signature`，签名算法为 RSA-SHA256。HashPay 回调必须携带 `X-HashPay-Merchant`，正文为 `key`、`iv`、`data`、`tag` 组成的加密包：RSA-OAEP-SHA256 解密 AES Key，AES-GCM 解密业务载荷。
+
+VPS-ONE 解密后校验 `merchantNo`、金额和 `paid/success/completed` 状态，并以 `eventId` 唯一索引去重。验证成功只写入一次持久化发货任务，后台任务再调用 CLICD 创建 VPS；任务失败采用指数退避重试，避免回调阻塞及重复发货。HashPay 对 HTTP 200 视为接收成功，非 2xx 应重试；生产环境建议限制 HashPay 来源 IP。
 
 ## Nginx HTTPS 反向代理
 
@@ -64,7 +72,7 @@ server {
 }
 ```
 
-将 `.env` 中 `BASE_URL` 改为正式 HTTPS 地址后执行 `docker compose up -d`。
+部署反向代理后，在管理后台将“站点公开地址”保存为正式 HTTPS 地址，无需修改或重启容器。
 
 ## 备份与恢复
 
