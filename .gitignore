@@ -13,3 +13,10 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+data/*.sqlite*
+.env
+vps-one-full.zip
