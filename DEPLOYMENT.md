@@ -37,6 +37,10 @@ http://服务器IP:9080/install
 
 创建套餐时，表单直接读取 CLICD `/images/enabled` 返回的已启用且已下载镜像，保存时再次远程校验必要字段，不会提前创建真实容器。用户完成 HashPay 支付并通过回调验证后，系统才调用 CLICD 创建对应 VPS。
 
+### 创建容器返回 400
+
+创建载荷严格按 v1 契约发送 `template_id`、资源、网络、SSH 模式、空密码/公钥字段及 `YYYY-MM-DD HH:MM:SS` 到期时间。月流量不再混入创建接口，应在创建成功后通过 `PUT /containers/{id}/traffic-limit` 设置。任务队列和客户控制台会保留 CLICD 的具体错误正文；重点检查 API Key 创建权限、镜像启用状态、宿主资源以及 NAT/IPv6 地址池。修复配置后重试失败任务，订单与实例唯一约束会阻止重复发货。
+
 ## HashPay 支付 API 配置与回调
 
 1. 在外部 HashPay 创建商户，取得 Merchant ID、商户 RSA 私钥与 HashPay RSA 公钥。

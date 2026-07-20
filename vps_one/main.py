@@ -86,7 +86,8 @@ async def process_job(db, job: Job):
         instance = await db.get(Instance, job.ref_id)
         order = await db.get(Order, instance.order_id)
         user = await db.get(User, order.user_id)
-        await send_mail(db, user.email, f"您的 VPS {instance.name} 已交付", f"实例：{instance.name}\n状态：{instance.status}\nIP：{instance.ip}\nIPv6：{instance.ipv6}\nSSH 端口：{instance.ssh_port}\n到期：{instance.expires_at}\n\n请登录客户中心管理实例并及时修改初始密码。")
+        plan = await db.get(Plan, instance.plan_id)
+        await send_mail(db, user.email, f"您的 VPS {instance.name} 已交付", f"套餐：{plan.name}\n订单：{order.order_no}\n实例：{instance.name}\n状态：{instance.status}\nIP：{instance.ip}\nIPv6：{instance.ipv6}\nSSH 端口：{instance.ssh_port}\n初始密码：{instance.ssh_password or '请在客户中心重置'}\n管理链接：{instance.management_url or '请登录客户中心管理'}\n到期：{instance.expires_at}\n\n请妥善保存信息并及时修改初始密码。")
 
 
 async def worker():
@@ -126,17 +127,22 @@ async def provision(db, order_id: int):
     client = CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token"))
     order.status = "provisioning"
     await db.commit()
-    result = await client.create(plan_payload(plan, order.order_no, expires.isoformat()))
-    obj = result.get("data", result)
-    instance = existing or Instance(user_id=order.user_id, order_id=order.id, plan_id=plan.id, name=f"VPS-{order.order_no[-8:]}")
-    instance.clicd_id = str(obj.get("uuid") or obj.get("id") or "")
-    if not instance.clicd_id:
+    result = await client.create(plan_payload(plan, order.order_no, expires.strftime("%Y-%m-%d %H:%M:%S")))
+    created = result.get("data", result)
+    instance_id = str(created.get("uuid") or created.get("id") or "")
+    if not instance_id:
         raise RuntimeError("CLICD 未返回实例 ID")
-    instance.status = obj.get("status", "running")
-    instance.ip = obj.get("ip", "")
-    instance.ipv6 = obj.get("ipv6", "")
-    instance.ssh_port = int(obj.get("ssh_port") or 22)
-    instance.access_json = json.dumps({"port_mappings": obj.get("port_mappings", [])}, ensure_ascii=False)
+    detail_result = await client.get(instance_id)
+    obj = detail_result.get("data", detail_result) or created
+    instance = existing or Instance(user_id=order.user_id, order_id=order.id, plan_id=plan.id, name=f"VPS-{order.order_no[-8:]}")
+    instance.clicd_id = instance_id
+    instance.status = obj.get("status", created.get("status", "running"))
+    instance.ip = obj.get("ip", created.get("ip", ""))
+    instance.ipv6 = obj.get("ipv6", created.get("ipv6", ""))
+    instance.ssh_port = int(obj.get("ssh_port") or created.get("ssh_port") or 22)
+    instance.ssh_password = str(obj.get("ssh_password") or created.get("ssh_password") or "")
+    instance.management_url = str(obj.get("management_url") or obj.get("panel_url") or obj.get("login_url") or created.get("management_url") or "")
+    instance.access_json = json.dumps({"port_mappings": obj.get("port_mappings", created.get("port_mappings", []))}, ensure_ascii=False)
     instance.expires_at = expires
     instance.last_synced_at = datetime.utcnow()
     db.add(instance)
@@ -317,7 +323,9 @@ async def dashboard(request: Request, db=Depends(session)):
     user = guard(request)
     orders = (await db.execute(select(Order).where(Order.user_id == user["uid"]).order_by(Order.id.desc()).limit(100))).scalars().all()
     instances = (await db.execute(select(Instance).where(Instance.user_id == user["uid"]).order_by(Instance.id.desc()))).scalars().all()
-    return templates.TemplateResponse("dashboard.html", ctx(request, orders=orders, instances=instances))
+    plans = {plan.id: plan for plan in (await db.execute(select(Plan).where(Plan.id.in_({order.plan_id for order in orders})))).scalars().all()} if orders else {}
+    jobs = {job.ref_id: job for job in (await db.execute(select(Job).where(Job.kind == "provision", Job.ref_id.in_({order.id for order in orders})))).scalars().all()} if orders else {}
+    return templates.TemplateResponse("dashboard.html", ctx(request, orders=orders, instances=instances, plans=plans, jobs=jobs))
 
 
 @app.post("/instances/{instance_id}/{action}")

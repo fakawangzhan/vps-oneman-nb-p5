@@ -20,7 +20,12 @@ class CLICD:
             response.raise_for_status()
             result = response.json() if response.content else {}
         except (httpx.HTTPError, ValueError) as exc:
-            raise CLICDError(f"CLICD 请求失败：{response.status_code}") from exc
+            try:
+                detail = response.json()
+                message = detail.get("message") or detail.get("detail") or response.text
+            except ValueError:
+                message = response.text
+            raise CLICDError(f"CLICD 请求失败：{response.status_code} · {str(message)[:800]}") from exc
         if isinstance(result, dict) and result.get("success") is False:
             raise CLICDError(str(result.get("message") or "CLICD 操作失败"))
         return result
@@ -116,10 +121,11 @@ def plan_payload(plan, order_no: str, expires_at: str) -> dict[str, Any]:
         "ipv6_count": plan.ipv6_count,
         "ipv6_addresses": [],
         "ssh_auth_mode": "auto_password",
+        "ssh_password": "",
+        "ssh_public_key": "",
         "expires_at": expires_at,
         "network_down_mbps": plan.network_down_mbps,
         "network_up_mbps": plan.network_up_mbps,
         "io_read_mbps": plan.io_read_mbps,
         "io_write_mbps": plan.io_write_mbps,
-        "monthly_traffic_gb": plan.traffic_gb,
     }
