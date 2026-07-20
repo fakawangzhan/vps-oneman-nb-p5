@@ -41,6 +41,8 @@ class Plan(Base):
     io_write_mbps: Mapped[int] = mapped_column(Integer, default=0)
     clicd_node: Mapped[str] = mapped_column(String(100), default="")
     clicd_image: Mapped[str] = mapped_column(String(200), default="debian-bookworm")
+    clicd_template_name: Mapped[str] = mapped_column(String(200), default="")
+    clicd_validated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assign_nat: Mapped[bool] = mapped_column(Boolean, default=True)
     port_mapping_count: Mapped[int] = mapped_column(Integer, default=1)
     assign_ipv4: Mapped[bool] = mapped_column(Boolean, default=False)

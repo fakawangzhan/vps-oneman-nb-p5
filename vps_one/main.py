@@ -66,6 +66,14 @@ def ctx(request: Request, **values):
     }
 
 
+async def site_url(db) -> str:
+    return (await get(db, "site_url", cfg.base_url)).rstrip("/")
+
+
+def unwrap(result):
+    return result.get("data", result) if isinstance(result, dict) else result
+
+
 def plan_snapshot(plan: Plan) -> str:
     fields = ["name", "description", "price_cents", "currency", "months", "cpu", "memory_mb", "disk_gb", "traffic_gb", "network_down_mbps", "network_up_mbps", "virtualization", "clicd_image"]
     return json.dumps({field: getattr(plan, field) for field in fields}, ensure_ascii=False)
@@ -256,7 +264,8 @@ async def create_order(request: Request, plan_id: int = Form(), csrf: str = Form
     await db.refresh(order)
     try:
         base, merchant, private_key = await get(db, "hashpay_base_url"), await get(db, "hashpay_merchant_id"), await get(db, "hashpay_private_key")
-        result = await HashPay(base, merchant, private_key).create({"merchantNo": order_no, "amount": f"{plan.price_cents / 100:.2f}", "currency": plan.currency, "description": plan.name, "notify_url": cfg.base_url + "/hashpay/callback", "return_url": cfg.base_url + "/dashboard"})
+        public_url = await site_url(db)
+        result = await HashPay(base, merchant, private_key).create({"merchantNo": order_no, "amount": f"{plan.price_cents / 100:.2f}", "currency": plan.currency, "description": plan.name, "notify_url": public_url + "/hashpay/callback", "return_url": public_url + "/dashboard"})
         data = result.get("data") or result.get("order") or result
         order.hashpay_id = str(data.get("id") or data.get("orderId") or "") or None
         order.checkout_url = result.get("checkoutUrl") or data.get("checkoutUrl") or data.get("payUrl")
@@ -366,11 +375,71 @@ async def admin(request: Request, db=Depends(session)):
     return templates.TemplateResponse("admin.html", ctx(request, stats=stats, orders=orders, jobs=jobs))
 
 
+@app.get("/admin/products", response_class=HTMLResponse)
+async def admin_products(request: Request, db=Depends(session)):
+    guard(request, True)
+    error = ""
+    dashboard_data, containers, host, routing, tasks, security = {}, [], {}, {}, [], {}
+    try:
+        client = CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token"))
+        results = await asyncio.gather(client.dashboard(), client.containers(), client.host_info(), client.routing(), client.tasks(), client.security_summary())
+        dashboard_data, containers, host, routing, tasks, security = [unwrap(item) for item in results]
+    except Exception as exc:
+        error = str(exc)
+    audits = (await db.execute(select(Audit).where(Audit.action.like("admin.clicd.%")).order_by(Audit.id.desc()).limit(30))).scalars().all()
+    return templates.TemplateResponse("admin_products.html", ctx(request, dashboard=dashboard_data or {}, containers=containers or [], host=host or {}, routing=routing or {}, tasks=tasks or [], security=security or {}, audits=audits, error=error))
+
+
+@app.post("/admin/products/{container_id}/{action}")
+async def admin_product_action(container_id: str, action: str, request: Request, csrf: str = Form(), db=Depends(session)):
+    user = guard(request, True)
+    check_csrf(request, csrf)
+    allowed = {"start", "stop", "restart", "reset-password"}
+    if action not in allowed:
+        raise HTTPException(400, "不允许的 CLICD 操作")
+    client = CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token"))
+    await client.action(container_id, action)
+    db.add(Audit(user_id=user["uid"], action=f"admin.clicd.{action}", detail=container_id, ip=request.client.host if request.client else ""))
+    await db.commit()
+    return RedirectResponse("/admin/products", 303)
+
+
+@app.post("/admin/products/{container_id}/limits")
+async def admin_product_limits(container_id: str, request: Request, csrf: str = Form(), vcpu: int = Form(), ram_mb: int = Form(), network_down_mbps: int = Form(), network_up_mbps: int = Form(), io_read_mbps: int = Form(0), io_write_mbps: int = Form(0), monthly_traffic_gb: int = Form(0), db=Depends(session)):
+    user = guard(request, True)
+    check_csrf(request, csrf)
+    if min(vcpu, ram_mb, network_down_mbps, network_up_mbps) < 0:
+        raise HTTPException(400, "资源限制无效")
+    client = CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token"))
+    await client.update_resource_limit(container_id, {"vcpu": vcpu, "ram_mb": ram_mb, "network_down_mbps": network_down_mbps, "network_up_mbps": network_up_mbps, "io_read_mbps": io_read_mbps, "io_write_mbps": io_write_mbps})
+    await client.update_traffic_limit(container_id, {"traffic_mode": "total", "monthly_traffic_gb": monthly_traffic_gb})
+    db.add(Audit(user_id=user["uid"], action="admin.clicd.limits", detail=container_id))
+    await db.commit()
+    return RedirectResponse("/admin/products", 303)
+
+
+@app.post("/admin/products/{container_id}/delete")
+async def admin_product_delete(container_id: str, request: Request, csrf: str = Form(), confirmation: str = Form(), db=Depends(session)):
+    user = guard(request, True)
+    check_csrf(request, csrf)
+    if confirmation != container_id:
+        raise HTTPException(400, "请输入完整容器 ID 确认删除")
+    await CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token")).delete(container_id)
+    db.add(Audit(user_id=user["uid"], action="admin.clicd.delete", detail=container_id, ip=request.client.host if request.client else ""))
+    await db.commit()
+    return RedirectResponse("/admin/products", 303)
+
+
 @app.get("/admin/plans", response_class=HTMLResponse)
 async def admin_plans(request: Request, db=Depends(session)):
     guard(request, True)
     plans = (await db.execute(select(Plan).order_by(Plan.sort_order, Plan.id))).scalars().all()
-    return templates.TemplateResponse("admin_plans.html", ctx(request, plans=plans))
+    templates_list, error = [], ""
+    try:
+        templates_list = unwrap(await CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token")).templates()) or []
+    except Exception as exc:
+        error = str(exc)
+    return templates.TemplateResponse("admin_plans.html", ctx(request, plans=plans, templates_list=templates_list, error=error))
 
 
 @app.post("/admin/plans")
@@ -379,8 +448,13 @@ async def save_plan(request: Request, csrf: str = Form(), plan_id: int = Form(0)
     check_csrf(request, csrf)
     if virtualization not in {"lxc", "kvm"} or min(price_cents, months, cpu, memory_mb, disk_gb) < 1:
         raise HTTPException(400, "套餐字段无效")
+    client = CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token"))
+    images = unwrap(await client.templates(virtualization)) or []
+    matched = next((item for item in images if str(item.get("id") or item.get("template_id") or item.get("slug")) == clicd_image), None)
+    if not matched:
+        raise HTTPException(400, "CLICD 中未找到已启用且已下载的对应镜像")
     plan = await db.get(Plan, plan_id) if plan_id else Plan(name=name, slug=slug, price_cents=price_cents, cpu=cpu, memory_mb=memory_mb, disk_gb=disk_gb)
-    for key, value in {"name": name, "slug": slug, "description": description, "price_cents": price_cents, "months": months, "stock": stock, "cpu": cpu, "memory_mb": memory_mb, "disk_gb": disk_gb, "traffic_gb": traffic_gb, "network_down_mbps": network_down_mbps, "network_up_mbps": network_up_mbps, "virtualization": virtualization, "clicd_image": clicd_image, "assign_nat": assign_nat, "assign_ipv4": assign_ipv4, "assign_ipv6": assign_ipv6, "active": active}.items():
+    for key, value in {"name": name, "slug": slug, "description": description, "price_cents": price_cents, "months": months, "stock": stock, "cpu": cpu, "memory_mb": memory_mb, "disk_gb": disk_gb, "traffic_gb": traffic_gb, "network_down_mbps": network_down_mbps, "network_up_mbps": network_up_mbps, "virtualization": virtualization, "clicd_image": clicd_image, "clicd_template_name": str(matched.get("name") or matched.get("label") or clicd_image), "clicd_validated_at": datetime.utcnow(), "assign_nat": assign_nat, "assign_ipv4": assign_ipv4, "assign_ipv6": assign_ipv6, "active": active}.items():
         setattr(plan, key, value)
     db.add(plan)
     db.add(Audit(user_id=user["uid"], action="plan.save", detail=slug))
@@ -403,7 +477,7 @@ async def toggle_plan(plan_id: int, request: Request, csrf: str = Form(), db=Dep
 @app.get("/admin/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, db=Depends(session)):
     guard(request, True)
-    keys = ["site_name", "site_tagline", "site_footer", "clicd_base_url", "hashpay_base_url", "hashpay_merchant_id", "edgekey_base_url", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from"]
+    keys = ["site_name", "site_tagline", "site_footer", "site_url", "clicd_base_url", "hashpay_base_url", "hashpay_merchant_id", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_from"]
     values = {key: await get(db, key) for key in keys}
     return templates.TemplateResponse("settings.html", ctx(request, values=values, saved=request.query_params.get("saved")))
 
@@ -413,13 +487,13 @@ async def settings_save(request: Request, csrf: str = Form(), db=Depends(session
     user = guard(request, True)
     form = await request.form()
     check_csrf(request, csrf)
-    allowed = {"site_name", "site_tagline", "site_footer", "clicd_base_url", "clicd_token", "hashpay_base_url", "hashpay_merchant_id", "hashpay_private_key", "hashpay_public_key", "edgekey_base_url", "edgekey_token", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_password", "smtp_from"}
+    allowed = {"site_name", "site_tagline", "site_footer", "site_url", "clicd_base_url", "clicd_token", "hashpay_base_url", "hashpay_merchant_id", "hashpay_private_key", "hashpay_public_key", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_password", "smtp_from"}
     values = {key: str(value).strip() for key, value in form.items() if key in allowed}
-    for key in {"clicd_base_url", "hashpay_base_url", "edgekey_base_url"} & values.keys():
+    for key in {"site_url", "clicd_base_url", "hashpay_base_url"} & values.keys():
         parsed = urlparse(values[key])
         if values[key] and parsed.scheme not in {"http", "https"}:
             raise HTTPException(400, "接口地址必须使用 HTTP 或 HTTPS")
-    secret_keys = {"clicd_token", "hashpay_private_key", "hashpay_public_key", "edgekey_token", "smtp_password"}
+    secret_keys = {"clicd_token", "hashpay_private_key", "hashpay_public_key", "smtp_password"}
     await set_many(db, values, secret_keys)
     db.add(Audit(user_id=user["uid"], action="settings.update"))
     await db.commit()
@@ -434,8 +508,8 @@ async def test_service(service: str, request: Request, csrf: str = Form(), recip
         await CLICD(await get(db, "clicd_base_url"), await get(db, "clicd_token")).test()
     elif service == "smtp":
         await send_mail(db, recipient, "VPS-ONE SMTP 测试", "邮件配置工作正常。")
-    elif service in {"hashpay", "edgekey"}:
-        base = await get(db, service + "_base_url")
+    elif service == "hashpay":
+        base = await get(db, "hashpay_base_url")
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(base)
             response.raise_for_status()

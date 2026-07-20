@@ -10,11 +10,6 @@ services:
       - "${VPS_ONE_PORT:-9080}:9080"
     volumes:
       - vps_one_data:/app/data
-    depends_on:
-      hashpay:
-        condition: service_started
-      edgekey:
-        condition: service_started
     healthcheck:
       test: ["CMD","python","-c","import urllib.request;urllib.request.urlopen('http://127.0.0.1:9080/healthz',timeout=2)"]
       interval: 15s
@@ -25,27 +20,5 @@ services:
     read_only: true
     tmpfs: [/tmp]
 
-  hashpay:
-    build: ./docker/hashpay
-    restart: unless-stopped
-    env_file: .env.hashpay
-    volumes:
-      - hashpay_data:/data
-    ports:
-      - "127.0.0.1:${HASHPAY_PORT:-8787}:8787"
-    security_opt: ["no-new-privileges:true"]
-
-  edgekey:
-    build: ./docker/edgekey
-    restart: unless-stopped
-    env_file: .env.edgekey
-    volumes:
-      - edgekey_data:/data
-    ports:
-      - "127.0.0.1:${EDGEKEY_PORT:-8788}:8788"
-    security_opt: ["no-new-privileges:true"]
-
 volumes:
   vps_one_data:
-  hashpay_data:
-  edgekey_data:

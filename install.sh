@@ -14,24 +14,8 @@ DATABASE_URL=sqlite+aiosqlite:////app/data/vps-one.sqlite
 BASE_URL=http://localhost:9080
 DEBUG=false
 VPS_ONE_PORT=9080
-HASHPAY_PORT=8787
-EDGEKEY_PORT=8788
 EOF
   chmod 600 .env
-fi
-if [ ! -f .env.hashpay ]; then
-  HASH_SECRET=$(openssl rand -hex 32)
-  cat > .env.hashpay <<EOF
-TGBOT_TOKEN=
-APP_SECRET=$HASH_SECRET
-EOF
-  chmod 600 .env.hashpay
-fi
-if [ ! -f .env.edgekey ]; then
-  cat > .env.edgekey <<EOF
-# 按 EdgeKey 文档补充生产密钥；首次启动后在 http://127.0.0.1:8788 初始化。
-EOF
-  chmod 600 .env.edgekey
 fi
 docker compose build --pull
 docker compose up -d
@@ -41,8 +25,7 @@ while [ "$i" -lt 90 ]; do
   if curl -fsS "http://127.0.0.1:${VPS_ONE_PORT:-9080}/healthz" >/dev/null 2>&1; then
     echo
     echo "安装完成：http://服务器IP:${VPS_ONE_PORT:-9080}/install"
-    echo "HashPay：http://127.0.0.1:${HASHPAY_PORT:-8787}"
-    echo "EdgeKey：http://127.0.0.1:${EDGEKEY_PORT:-8788}"
+    echo "首次安装后请在系统配置中填写站点地址、CLICD、HashPay 与 SMTP。"
     exit 0
   fi
   printf '.'; i=$((i+1)); sleep 2
