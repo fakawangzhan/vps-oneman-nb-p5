@@ -83,6 +83,8 @@ class Instance(Base):
     ip: Mapped[str] = mapped_column(String(100), default="")
     ipv6: Mapped[str] = mapped_column(String(100), default="")
     ssh_port: Mapped[int] = mapped_column(Integer, default=22)
+    management_url: Mapped[str] = mapped_column(Text, default="")
+    ssh_password: Mapped[str] = mapped_column(Text, default="")
     access_json: Mapped[str] = mapped_column(Text, default="{}")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

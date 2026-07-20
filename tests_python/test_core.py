@@ -30,6 +30,9 @@ def test_clicd_payload_contract():
     assert payload["template_id"] == "debian-bookworm"
     assert payload["assign_nat"] is True
     assert payload["network_up_mbps"] == 100
+    assert payload["ssh_password"] == ""
+    assert payload["ssh_public_key"] == ""
+    assert "monthly_traffic_gb" not in payload
 
 
 def test_hashpay_encrypted_callback():
