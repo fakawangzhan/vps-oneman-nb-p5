@@ -11,7 +11,7 @@ if [ ! -f .env ]; then
 SECRET_KEY=$SECRET_KEY
 MASTER_KEY=$MASTER_KEY
 DATABASE_URL=sqlite+aiosqlite:////app/data/vps-one.sqlite
-BASE_URL=http://localhost:9080
+BASE_URL=http://47.83.17.62:9080
 DEBUG=false
 VPS_ONE_PORT=9080
 EOF
