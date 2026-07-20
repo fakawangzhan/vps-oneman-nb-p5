@@ -11,7 +11,7 @@ if [ ! -f .env ]; then
 SECRET_KEY=$SECRET_KEY
 MASTER_KEY=$MASTER_KEY
 DATABASE_URL=sqlite+aiosqlite:////app/data/vps-one.sqlite
-BASE_URL=http://localhost:9080
+BASE_URL=http://47.83.17.62:9080
 DEBUG=false
 VPS_ONE_PORT=9080
 HASHPAY_PORT=8787
@@ -40,9 +40,9 @@ i=0
 while [ "$i" -lt 90 ]; do
   if curl -fsS "http://127.0.0.1:${VPS_ONE_PORT:-9080}/healthz" >/dev/null 2>&1; then
     echo
-    echo "安装完成：http://服务器IP:${VPS_ONE_PORT:-9080}/install"
-    echo "HashPay：http://127.0.0.1:${HASHPAY_PORT:-8787}"
-    echo "EdgeKey：http://127.0.0.1:${EDGEKEY_PORT:-8788}"
+    echo "安装完成：http://47.83.17.62:${VPS_ONE_PORT:-9080}/install"
+    echo "HashPay：http://47.83.17.62:${HASHPAY_PORT:-8787}"
+    echo "EdgeKey：http://47.83.17.62:${EDGEKEY_PORT:-8788}"
     exit 0
   fi
   printf '.'; i=$((i+1)); sleep 2
